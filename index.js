@@ -1,18 +1,20 @@
 import { chat, chat_metadata, eventSource, event_types, getCurrentChatId, saveSettingsDebounced } from '../../../../script.js';
 import { extension_settings, saveMetadataDebounced } from '../../../extensions.js';
 import { POPUP_TYPE, Popup } from '../../../popup.js';
-import { registerSlashCommand } from '../../../slash-commands.js';
+import { handleSlashCommand, registerSlashCommand } from '../../../slash-commands.js';
 import { isTrueBoolean } from '../../../utils.js';
 import { Chart, registerables } from './lib/chartjs/chart.esm.js';
 
 Chart.register(...registerables);
 
 let isActive = false;
-let consecutive = extension_settings.wordFrequency?.consecutive ?? [1,2,3];
+let consecutive = extension_settings.wordFrequency?.consecutive ?? [3,4];
 let movingAverage = extension_settings.wordFrequency?.movingAverage ?? 10;
 let movingAverageInput;
 let frequencyPerWords = extension_settings.wordFrequency?.frequencyPerWords ?? 10;
 let frequencyPerWordsInput;
+let autoBlockCount = extension_settings.wordFrequency?.autoBlockCount ?? 0;
+let autoBlockInput;
 /**@type {HTMLElement} */
 let dom;
 let domChartContainer;
@@ -64,6 +66,17 @@ const show = ()=>{
                     }
                     perWords.append('Freq. per words');
                     controls.append(perWords);
+                }
+                const ab = document.createElement('label'); {
+                    const inp = document.createElement('input'); {
+                        autoBlockInput = inp;
+                        inp.type = 'checkbox';
+                        inp.checked = autoBlockCount > 0;
+                        inp.addEventListener('click', ()=>setAutoBlock(inp.checked ? 3 : 0));
+                        ab.append(inp);
+                    }
+                    ab.append('Auto-Block Top Phrases');
+                    controls.append(ab);
                 }
                 const commonBtn = document.createElement('div'); {
                     commonBtn.classList.add('menu_button');
@@ -136,11 +149,8 @@ const getWords = ()=>{
         const item = {
             id: idx,
             text: mes.mes
-                // remove codeblocks
                 .split('```').filter((_,idx)=>idx % 2 == 0).join('')
-                // remove contractions at end of words ("Alice's" -> "Alice")
-                .replace(/('s|'d|'ve|n't)\b/g, '')
-            ,
+                .replace(/('s|'d|'ve|n't)\b/g, ''),
             words: [],
         };
         allMessages.push(item);
@@ -148,8 +158,7 @@ const getWords = ()=>{
         for (const s of allSentences) {
             const words = Array.from(wordSegmenter.segment(s))
                 .filter(it=>it.isWordLike)
-                .map(it=>it.segment.trim().toLowerCase())
-            ;
+                .map(it=>it.segment.trim().toLowerCase());
             for (const num of consecutive) {
                 if (num == 1) item.words.push(...words);
                 else {
@@ -196,7 +205,6 @@ const render = (words)=>{
                 render(processWords(allWords));
             });
             item.addEventListener('click', ()=>{
-                //TODO add to chart
                 if (selected.includes(word.word)) {
                     selected.splice(selected.indexOf(word.word), 1);
                     item.classList.remove('stwf--selected');
@@ -214,7 +222,6 @@ const updateChart = ()=>{
     domChartContainer.innerHTML = '';
     if (selected.length > 0) {
         const style = window.getComputedStyle(domChartContainer);
-        console.log('SMART_THEME_BODY_COLOR', style.getPropertyValue('--SmartThemeBodyColor'));
         Chart.defaults.borderColor = style.getPropertyValue('--SmartThemeBorderColor');
         Chart.defaults.color = style.getPropertyValue('--SmartThemeEmColor');
         colors[0] = style.getPropertyValue('--SmartThemeQuoteColor');
@@ -233,8 +240,7 @@ const updateChart = ()=>{
                 const cum = allMessages
                     .slice(movingAverage ? idx - movingAverage : first, idx + 1)
                     .map(it=>it.words.filter(w=>w == word).length / (frequencyPerWords ? it.words.length : 1))
-                    .reduce((sum,cur)=>sum + cur,0)
-                ;
+                    .reduce((sum,cur)=>sum + cur,0);
                 data.push(cum / (movingAverage || idx - (first - 1)));
             }
             for (let idx = Math.min(last, chat.length); idx < chat.length; idx++) {
@@ -270,19 +276,33 @@ const updateChart = ()=>{
     }
 };
 const update = ()=>{
-    if (!isActive) return;
     if (getCurrentChatId() === undefined) return hide();
     if (!chat_metadata.wordFrequency) {
         chat_metadata.wordFrequency = { common:[] };
         saveMetadataDebounced();
     }
-    const allWords = getWords();
-    const words = processWords(allWords);
-    render(words);
-    updateChart();
+    const allWordsValue = getWords();
+    const wordsValue = processWords(allWordsValue);
+
+    if (isActive) {
+        render(wordsValue);
+        updateChart();
+    }
+
+    if (autoBlockCount > 0) {
+        const topPhrases = wordsValue.slice(0, autoBlockCount).map(it => it.word);
+        if (topPhrases.length > 0) {
+            const forbiddenList = topPhrases.join("'; '");
+            const command = `/inject id=wordFrequencyAutoBlock role=user ephemeral=false position=chat (To keep our story fresh and avoid repetition, please find creative alternatives and do not use these exact phrases in your next response: '${forbiddenList}'.)`;
+            handleSlashCommand(command);
+        } else {
+            handleSlashCommand('/inject id=wordFrequencyAutoBlock');
+        }
+    } else {
+        handleSlashCommand('/inject id=wordFrequencyAutoBlock');
+    }
 };
 
-// show();
 eventSource.on(event_types.USER_MESSAGE_RENDERED, ()=>update());
 eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, ()=>update());
 eventSource.on(event_types.CHAT_CHANGED, ()=>update());
@@ -312,7 +332,7 @@ registerSlashCommand('wordfrequency-consecutive',
         }
     },
     [],
-    '<span class="monospace">(listOfNumbers)</span> – Set number of consecutive words to check. Example: <code>/wordfrequency-consecutive [1,2,3]</code> to check individual words as well as one-word and two-word sequences.',
+    '<span class="monospace">(listOfNumbers)</span> – Set number of consecutive words to check. Example: <code>/wordfrequency-consecutive [1,2,3]</code>.',
     true,
     true,
 );
@@ -333,11 +353,10 @@ registerSlashCommand('wordfrequency-movingaverage',
         }
     },
     [],
-    '<span class="monospace">(listOfNumbers)</span> – Set range of the moving average for the frequency chart. Set to <code>0</code> to disable moving average. Call without value to return the current setting.',
+    '<span class="monospace">(number)</span> – Set range of the moving average for the frequency chart. Set to <code>0</code> to disable. Call without value to return the current setting.',
     true,
     true,
 );
-
 registerSlashCommand('wordfrequency-common',
     (args, value)=>{
         if (isTrueBoolean(args.clear)) {
@@ -355,11 +374,10 @@ registerSlashCommand('wordfrequency-common',
         }
     },
     [],
-    '<span class="monospace">[optional clear=true] (optional word)</span> – Show blocklist. Use <code>clear=true</code> to remove all "common" words / sequences, or a single common word / sequence from the blocklist.',
+    '<span class="monospace">[optional clear=true] (optional word)</span> – Show blocklist. Use <code>clear=true</code> to remove all "common" words or a single common word from the blocklist.',
     true,
     true,
 );
-
 registerSlashCommand('wordfrequency-select',
     (args, value)=>{
         if (selected.includes(value)) {
@@ -376,7 +394,6 @@ registerSlashCommand('wordfrequency-select',
     true,
     true,
 );
-
 const setFrequencyPerWords = (value)=>{
     if (!extension_settings.wordFrequency) extension_settings.wordFrequency = {};
     if (frequencyPerWordsInput) frequencyPerWordsInput.checked = Boolean(value);
@@ -385,3 +402,25 @@ const setFrequencyPerWords = (value)=>{
     saveSettingsDebounced();
     updateChart();
 };
+const setAutoBlock = (value) => {
+    if (!extension_settings.wordFrequency) extension_settings.wordFrequency = {};
+    const numValue = Number(value);
+    if (autoBlockInput) autoBlockInput.checked = numValue > 0;
+    extension_settings.wordFrequency.autoBlockCount = numValue;
+    autoBlockCount = extension_settings.wordFrequency.autoBlockCount;
+    saveSettingsDebounced();
+    update();
+};
+registerSlashCommand('wordfrequency-autoblock',
+    (args, value) => {
+        if (value?.trim()) {
+            setAutoBlock(value);
+        } else {
+            return JSON.stringify(autoBlockCount);
+        }
+    },
+    [],
+    '<span class="monospace">(number)</span> – Automatically forbid the top N most frequent phrases. Set to <code>3</code> to block the top 3. Set to <code>0</code> to disable. No value returns current setting.',
+    true,
+    true,
+);
