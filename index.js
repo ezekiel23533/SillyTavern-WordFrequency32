@@ -1,20 +1,18 @@
 import { chat, chat_metadata, eventSource, event_types, getCurrentChatId, saveSettingsDebounced } from '../../../../script.js';
 import { extension_settings, saveMetadataDebounced } from '../../../extensions.js';
 import { POPUP_TYPE, Popup } from '../../../popup.js';
-import { handleSlashCommand, registerSlashCommand } from '../../../slash-commands.js';
+import { registerSlashCommand } from '../../../slash-commands.js';
 import { isTrueBoolean } from '../../../utils.js';
 import { Chart, registerables } from './lib/chartjs/chart.esm.js';
 
 Chart.register(...registerables);
 
 let isActive = false;
-let consecutive = extension_settings.wordFrequency?.consecutive ?? [3,4];
+let consecutive = extension_settings.wordFrequency?.consecutive ?? [1,2,3];
 let movingAverage = extension_settings.wordFrequency?.movingAverage ?? 10;
 let movingAverageInput;
 let frequencyPerWords = extension_settings.wordFrequency?.frequencyPerWords ?? 10;
 let frequencyPerWordsInput;
-let autoBlockCount = extension_settings.wordFrequency?.autoBlockCount ?? 0;
-let autoBlockInput;
 /**@type {HTMLElement} */
 let dom;
 let domChartContainer;
@@ -26,7 +24,7 @@ let allMessages;
 const colors = [
     'silver',
     'red',
-    'green',
+g    'green',
     'magenta',
     'yellow',
     'orange',
@@ -66,17 +64,6 @@ const show = ()=>{
                     }
                     perWords.append('Freq. per words');
                     controls.append(perWords);
-                }
-                const ab = document.createElement('label'); {
-                    const inp = document.createElement('input'); {
-                        autoBlockInput = inp;
-                        inp.type = 'checkbox';
-                        inp.checked = autoBlockCount > 0;
-                        inp.addEventListener('click', ()=>setAutoBlock(inp.checked ? 3 : 0));
-                        ab.append(inp);
-                    }
-                    ab.append('Auto-Block Top Phrases');
-                    controls.append(ab);
                 }
                 const commonBtn = document.createElement('div'); {
                     commonBtn.classList.add('menu_button');
@@ -149,8 +136,11 @@ const getWords = ()=>{
         const item = {
             id: idx,
             text: mes.mes
+                // remove codeblocks
                 .split('```').filter((_,idx)=>idx % 2 == 0).join('')
-                .replace(/('s|'d|'ve|n't)\b/g, ''),
+                // remove contractions at end of words ("Alice's" -> "Alice")
+                .replace(/('s|'d|'ve|n't)\b/g, '')
+            ,
             words: [],
         };
         allMessages.push(item);
@@ -158,7 +148,8 @@ const getWords = ()=>{
         for (const s of allSentences) {
             const words = Array.from(wordSegmenter.segment(s))
                 .filter(it=>it.isWordLike)
-                .map(it=>it.segment.trim().toLowerCase());
+                .map(it=>it.segment.trim().toLowerCase())
+            ;
             for (const num of consecutive) {
                 if (num == 1) item.words.push(...words);
                 else {
@@ -187,22 +178,26 @@ const processWords = (allWords)=>{
 const render = (words)=>{
     domList.innerHTML = '';
     let max;
-    for (const word of words.filter((it,idx)=>idx < 100 || selected.includes(it))) {
+    for (const word of words.filter((it,idx)=>idx < 100 || selected.includes(it.word))) {
         if (!max) max = word.count;
         const item = document.createElement('div'); {
             item.classList.add('stwf--item');
-            item.title = 'Click to show/hide frequency over time.\nRight-click to remove from list.';
+            item.title = 'Click to show/hide frequency over time.\nRight-click to add to blocklist.';
             item.textContent = `${word.word} (${word.count})`;
             item.style.background = `linear-gradient(90deg, var(--SmartThemeBotMesBlurTintColor) 0%, var(--SmartThemeBotMesBlurTintColor) ${word.count / max * 100}%, transparent ${word.count / max * 100}%, transparent 100%)`;
+            if (selected.includes(word.word)) {
+                item.classList.add('stwf--selected');
+            }
             item.addEventListener('contextmenu', (evt)=>{
                 evt.preventDefault();
+                if (!chat_metadata.wordFrequency) chat_metadata.wordFrequency = { common: [] };
                 if (chat_metadata.wordFrequency.common.includes(word.word)) {
-                    chat_metadata.wordFrequency.common.splice(chat_metadata.wordFrequency.common.indexOf(word.word), 1);
+                    // Already common, do nothing
                 } else {
                     chat_metadata.wordFrequency.common.push(word.word);
                 }
                 saveMetadataDebounced();
-                render(processWords(allWords));
+                update();
             });
             item.addEventListener('click', ()=>{
                 if (selected.includes(word.word)) {
@@ -230,22 +225,35 @@ const updateChart = ()=>{
         domChartContainer.append(canvas);
         const dataSets = [];
         for (const word of selected) {
-            const first = allMessages.findIndex(it=>it.words.includes(word)) + movingAverage;
+            const first = allMessages.findIndex(it=>it.words.includes(word));
             const last = allMessages.findLastIndex(it=>it.words.includes(word));
             const data = [];
-            for (let idx = movingAverage; idx < Math.max(first, movingAverage); idx++) {
-                data.push(null);
+            const range = movingAverage > 0 ? movingAverage : allMessages.length;
+
+            for (let idx = 0; idx < allMessages.length; idx++) {
+                const startSlice = Math.max(0, idx - range + 1);
+                const endSlice = idx + 1;
+                const windowMessages = allMessages.slice(startSlice, endSlice);
+                
+                let totalOccurrences = 0;
+                let totalWords = 0;
+
+                windowMessages.forEach(it => {
+                    totalOccurrences += it.words.filter(w => w === word).length;
+                    if (frequencyPerWords) {
+                        totalWords += it.words.length;
+                    }
+                });
+
+                if (frequencyPerWords && totalWords === 0) {
+                    data.push(0);
+                    continue;
+                }
+                
+                const freq = frequencyPerWords ? totalOccurrences / totalWords : totalOccurrences / windowMessages.length;
+                data.push(freq);
             }
-            for (let idx = Math.max(first, movingAverage); idx < Math.min(last, chat.length); idx++) {
-                const cum = allMessages
-                    .slice(movingAverage ? idx - movingAverage : first, idx + 1)
-                    .map(it=>it.words.filter(w=>w == word).length / (frequencyPerWords ? it.words.length : 1))
-                    .reduce((sum,cur)=>sum + cur,0);
-                data.push(cum / (movingAverage || idx - (first - 1)));
-            }
-            for (let idx = Math.min(last, chat.length); idx < chat.length; idx++) {
-                data.push(null);
-            }
+
             dataSets.push({
                 label: word,
                 data,
@@ -253,22 +261,36 @@ const updateChart = ()=>{
                 borderColor: colors[dataSets.length % colors.length],
                 tension: 0.2,
                 pointRadius: 0,
-                borderWidth: 1,
+                borderWidth: 2,
             });
         }
         const chart = new Chart(canvas, {
             type: 'line',
             data: {
-                labels: chat.map((it,idx)=>idx).filter(it=>it >= movingAverage),
+                labels: allMessages.map((it,idx)=>idx),
                 datasets: dataSets,
             },
             options: {
+                responsive: true,
+                maintainAspectRatio: false,
                 scales: {
                     x: {
-                        text: 'Message #',
+                        title: {
+                            display: true,
+                            text: 'Message #',
+                        },
                     },
                     y: {
-                        text: 'Frequency per message',
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: frequencyPerWords ? 'Frequency per 100 words' : 'Frequency per message',
+                        },
+                        ticks: {
+                            callback: function(value, index, values) {
+                                return frequencyPerWords ? (Number(value) * 100).toFixed(2) + '%' : Number(value).toFixed(2);
+                            }
+                        }
                     },
                 },
             },
@@ -276,37 +298,24 @@ const updateChart = ()=>{
     }
 };
 const update = ()=>{
+    if (!isActive) return;
     if (getCurrentChatId() === undefined) return hide();
     if (!chat_metadata.wordFrequency) {
         chat_metadata.wordFrequency = { common:[] };
         saveMetadataDebounced();
     }
-    const allWordsValue = getWords();
-    const wordsValue = processWords(allWordsValue);
-
-    if (isActive) {
-        render(wordsValue);
-        updateChart();
-    }
-
-    if (autoBlockCount > 0) {
-        const topPhrases = wordsValue.slice(0, autoBlockCount).map(it => it.word);
-        if (topPhrases.length > 0) {
-            const forbiddenList = topPhrases.join("'; '");
-            const command = `/inject id=wordFrequencyAutoBlock role=user ephemeral=false position=chat (To keep our story fresh and avoid repetition, please find creative alternatives and do not use these exact phrases in your next response: '${forbiddenList}'.)`;
-            handleSlashCommand(command);
-        } else {
-            handleSlashCommand('/inject id=wordFrequencyAutoBlock');
-        }
-    } else {
-        handleSlashCommand('/inject id=wordFrequencyAutoBlock');
-    }
+    const allWords = getWords();
+    const words = processWords(allWords);
+    render(words);
+    updateChart();
 };
 
 eventSource.on(event_types.USER_MESSAGE_RENDERED, ()=>update());
 eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, ()=>update());
 eventSource.on(event_types.CHAT_CHANGED, ()=>update());
 eventSource.on(event_types.MESSAGE_EDITED, ()=>update());
+eventSource.on(event_types.MESSAGE_DELETED, ()=>update());
+
 
 registerSlashCommand('wordfrequency',
     (args, value)=>{
@@ -332,7 +341,7 @@ registerSlashCommand('wordfrequency-consecutive',
         }
     },
     [],
-    '<span class="monospace">(listOfNumbers)</span> – Set number of consecutive words to check. Example: <code>/wordfrequency-consecutive [1,2,3]</code>.',
+    '<span class="monospace">(listOfNumbers)</span> – Set number of consecutive words to check. Example: <code>/wordfrequency-consecutive [1,2,3]</code> to check individual words as well as one-word and two-word sequences.',
     true,
     true,
 );
@@ -353,10 +362,11 @@ registerSlashCommand('wordfrequency-movingaverage',
         }
     },
     [],
-    '<span class="monospace">(number)</span> – Set range of the moving average for the frequency chart. Set to <code>0</code> to disable. Call without value to return the current setting.',
+    '<span class="monospace">(number)</span> – Set range of the moving average for the frequency chart. Set to <code>0</code> to use a cumulative average. Call without value to return the current setting.',
     true,
     true,
 );
+
 registerSlashCommand('wordfrequency-common',
     (args, value)=>{
         if (isTrueBoolean(args.clear)) {
@@ -374,10 +384,11 @@ registerSlashCommand('wordfrequency-common',
         }
     },
     [],
-    '<span class="monospace">[optional clear=true] (optional word)</span> – Show blocklist. Use <code>clear=true</code> to remove all "common" words or a single common word from the blocklist.',
+    '<span class="monospace">[optional clear=true] (optional word)</span> – Show blocklist. Use <code>clear=true</code> to remove all "common" words / sequences, or a single common word / sequence from the blocklist.',
     true,
     true,
 );
+
 registerSlashCommand('wordfrequency-select',
     (args, value)=>{
         if (selected.includes(value)) {
@@ -394,6 +405,7 @@ registerSlashCommand('wordfrequency-select',
     true,
     true,
 );
+
 const setFrequencyPerWords = (value)=>{
     if (!extension_settings.wordFrequency) extension_settings.wordFrequency = {};
     if (frequencyPerWordsInput) frequencyPerWordsInput.checked = Boolean(value);
@@ -402,25 +414,93 @@ const setFrequencyPerWords = (value)=>{
     saveSettingsDebounced();
     updateChart();
 };
-const setAutoBlock = (value) => {
-    if (!extension_settings.wordFrequency) extension_settings.wordFrequency = {};
-    const numValue = Number(value);
-    if (autoBlockInput) autoBlockInput.checked = numValue > 0;
-    extension_settings.wordFrequency.autoBlockCount = numValue;
-    autoBlockCount = extension_settings.wordFrequency.autoBlockCount;
-    saveSettingsDebounced();
-    update();
-};
-registerSlashCommand('wordfrequency-autoblock',
+
+
+// ------------------- NEW COMMAND START -------------------
+registerSlashCommand('wordfrequency-block',
     (args, value) => {
-        if (value?.trim()) {
-            setAutoBlock(value);
-        } else {
-            return JSON.stringify(autoBlockCount);
+        const injectionId = 'wordFrequencyBlocker';
+
+        // Logic to clear the injection
+        if (isTrueBoolean(args.clear)) {
+            if (chat_metadata.prompt_injects) {
+                const index = chat_metadata.prompt_injects.findIndex(inj => inj.id === injectionId);
+                if (index !== -1) {
+                    chat_metadata.prompt_injects.splice(index, 1);
+                    saveMetadataDebounced();
+                    new Popup('Repetitive phrase blocker injection has been removed.', POPUP_TYPE.INFO).show();
+                } else {
+                    new Popup('No active phrase blocker injection to remove.', POPUP_TYPE.INFO).show();
+                }
+            }
+            return;
         }
+
+        // Get arguments with defaults
+        const count = Number(args.count ?? 5);
+        let range;
+        try {
+            range = JSON.parse(args.range ?? '[2,3]');
+            if (!Array.isArray(range)) throw new Error();
+        } catch {
+            new Popup('Invalid "range" argument. It must be a valid JSON array, e.g., <code>[2,3]</code>.', POPUP_TYPE.ERROR).show();
+            return;
+        }
+
+        // Process the chat to get the latest word frequencies
+        const allWords = getWords();
+        const processedWords = processWords(allWords);
+
+        // Filter phrases by the specified range (number of words in the phrase)
+        // and take the top 'count'
+        const phrasesToBlock = processedWords
+            .filter(item => {
+                const wordCount = item.word.split(' ').length;
+                return range.includes(wordCount);
+            })
+            .slice(0, count)
+            .map(item => `"${item.word}"`);
+
+        if (phrasesToBlock.length === 0) {
+            new Popup(`No phrases found within the specified range: <code>${JSON.stringify(range)}</code>.`, POPUP_TYPE.INFO).show();
+            return;
+        }
+
+        // Construct the prompt to be injected
+        const promptText = `(System: Your responses are becoming repetitive. Avoid using the following phrases: ${phrasesToBlock.join(', ')})`;
+
+        // Ensure the prompt_injects array exists
+        if (!chat_metadata.prompt_injects) {
+            chat_metadata.prompt_injects = [];
+        }
+
+        // Find if an injection with our ID already exists
+        const existingInjection = chat_metadata.prompt_injects.find(inj => inj.id === injectionId);
+
+        if (existingInjection) {
+            // Update existing injection
+            existingInjection.text = promptText;
+        } else {
+            // Add new injection
+            chat_metadata.prompt_injects.push({
+                id: injectionId,
+                text: promptText,
+                role: 'user', // As requested
+                ephemeral: false, // As requested
+                position: 'chat', // As requested
+                // Add default values for other potential fields to be safe
+                depth: 4, 
+                enabled: true,
+            });
+        }
+
+        // Save the changes and notify the user
+        saveMetadataDebounced();
+        new Popup(`<strong>AI Instruction Set!</strong><br>The AI has been instructed to avoid the following phrases:<br><br><em>${phrasesToBlock.join('<br>')}</em>`, POPUP_TYPE.SUCCESS).show();
     },
     [],
-    '<span class="monospace">(number)</span> – Automatically forbid the top N most frequent phrases. Set to <code>3</code> to block the top 3. Set to <code>0</code> to disable. No value returns current setting.',
+    '<span class="monospace">[count=5] [range="[2,3]"] [clear=true]</span> – Injects a prompt for the AI to avoid the top repetitive phrases. Use <code>clear=true</code> to remove the injection.',
     true,
-    true,
+    true
 );
+// ------------------- NEW COMMAND END -------------------
