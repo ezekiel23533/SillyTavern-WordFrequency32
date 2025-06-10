@@ -24,7 +24,7 @@ let allMessages;
 const colors = [
     'silver',
     'red',
-g    'green',
+    'green',
     'magenta',
     'yellow',
     'orange',
