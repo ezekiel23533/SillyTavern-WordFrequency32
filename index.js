@@ -415,13 +415,10 @@ const setFrequencyPerWords = (value)=>{
     updateChart();
 };
 
-
-// ------------------- NEW COMMAND START -------------------
 registerSlashCommand('wordfrequency-block',
     (args, value) => {
         const injectionId = 'wordFrequencyBlocker';
 
-        // Logic to clear the injection
         if (isTrueBoolean(args.clear)) {
             if (chat_metadata.prompt_injects) {
                 const index = chat_metadata.prompt_injects.findIndex(inj => inj.id === injectionId);
@@ -436,7 +433,6 @@ registerSlashCommand('wordfrequency-block',
             return;
         }
 
-        // Get arguments with defaults
         const count = Number(args.count ?? 5);
         let range;
         try {
@@ -447,12 +443,9 @@ registerSlashCommand('wordfrequency-block',
             return;
         }
 
-        // Process the chat to get the latest word frequencies
         const allWords = getWords();
         const processedWords = processWords(allWords);
 
-        // Filter phrases by the specified range (number of words in the phrase)
-        // and take the top 'count'
         const phrasesToBlock = processedWords
             .filter(item => {
                 const wordCount = item.word.split(' ').length;
@@ -466,40 +459,70 @@ registerSlashCommand('wordfrequency-block',
             return;
         }
 
-        // Construct the prompt to be injected
-        const promptText = `(System: Your responses are becoming repetitive. Avoid using the following phrases or similar: ${phrasesToBlock.join(', ')})`;
+        const promptText = `(System: Your responses are becoming repetitive. Avoid using the following phrases: ${phrasesToBlock.join(', ')})`;
 
-        // Ensure the prompt_injects array exists
         if (!chat_metadata.prompt_injects) {
             chat_metadata.prompt_injects = [];
         }
 
-        // Find if an injection with our ID already exists
         const existingInjection = chat_metadata.prompt_injects.find(inj => inj.id === injectionId);
 
         if (existingInjection) {
-            // Update existing injection
             existingInjection.text = promptText;
         } else {
-            // Add new injection
             chat_metadata.prompt_injects.push({
                 id: injectionId,
                 text: promptText,
-                role: 'user', // As requested
-                ephemeral: false, // As requested
-                position: 'chat', // As requested
-                // Add default values for other potential fields to be safe
+                role: 'user',
+                ephemeral: false,
+                position: 'chat',
                 depth: 4, 
                 enabled: true,
             });
         }
 
-        // Save the changes and notify the user
         saveMetadataDebounced();
         new Popup(`<strong>AI Instruction Set!</strong><br>The AI has been instructed to avoid the following phrases:<br><br><em>${phrasesToBlock.join('<br>')}</em>`, POPUP_TYPE.SUCCESS).show();
     },
-    ['count', 'range', 'clear'], // <-- THE FIX IS HERE
+    [],
     '<span class="monospace">[count=5] [range="[2,3]"] [clear=true]</span> – Injects a prompt for the AI to avoid the top repetitive phrases. Use <code>clear=true</code> to remove the injection.',
+    true,
+    true
+);
+
+// ------------------- NEW COMMAND TO GET BLOCKED PHRASES START -------------------
+registerSlashCommand('wordfrequency-getblocked',
+    (args, value) => {
+        const injectionId = 'wordFrequencyBlocker';
+
+        // Find the injection in the chat metadata
+        const injection = chat_metadata.prompt_injects?.find(inj => inj.id === injectionId);
+
+        if (!injection) {
+            // If no injection is found, return an empty JSON array
+            return '[]';
+        }
+
+        // Use a regular expression to extract the list of phrases from the injection text
+        // This makes the parsing robust
+        const regex = /Avoid using the following phrases: (.*)\)$/;
+        const match = injection.text.match(regex);
+
+        if (!match || !match[1]) {
+            // If the text doesn't match the expected format, return an empty array
+            return '[]';
+        }
+
+        const phrasesString = match[1]; // This will be '"phrase one", "phrase two", ...'
+
+        // Wrap the string in brackets to make it a valid JSON array string
+        const jsonArrayString = `[${phrasesString}]`;
+
+        // Return the JSON array string. The slash command system will handle it as an array.
+        return jsonArrayString;
+    },
+    [],
+    '<span class="monospace"></span> – Returns a JSON array of the currently blocked phrases.',
     true,
     true
 );
