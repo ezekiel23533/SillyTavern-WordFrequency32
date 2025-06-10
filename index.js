@@ -415,112 +415,20 @@ const setFrequencyPerWords = (value)=>{
     updateChart();
 };
 
-registerSlashCommand('wordfrequency-block',
-    (args, value) => {
-        const injectionId = 'wordFrequencyBlocker';
-
-        if (isTrueBoolean(args.clear)) {
-            if (chat_metadata.prompt_injects) {
-                const index = chat_metadata.prompt_injects.findIndex(inj => inj.id === injectionId);
-                if (index !== -1) {
-                    chat_metadata.prompt_injects.splice(index, 1);
-                    saveMetadataDebounced();
-                    new Popup('Repetitive phrase blocker injection has been removed.', POPUP_TYPE.INFO).show();
-                } else {
-                    new Popup('No active phrase blocker injection to remove.', POPUP_TYPE.INFO).show();
-                }
-            }
-            return;
-        }
-
-        const count = Number(args.count ?? 5);
-        let range;
-        try {
-            range = JSON.parse(args.range ?? '[2,3]');
-            if (!Array.isArray(range)) throw new Error();
-        } catch {
-            new Popup('Invalid "range" argument. It must be a valid JSON array, e.g., <code>[2,3]</code>.', POPUP_TYPE.ERROR).show();
-            return;
-        }
-
-        const allWords = getWords();
-        const processedWords = processWords(allWords);
-
-        const phrasesToBlock = processedWords
-            .filter(item => {
-                const wordCount = item.word.split(' ').length;
-                return range.includes(wordCount);
-            })
-            .slice(0, count)
-            .map(item => `"${item.word}"`);
-
-        if (phrasesToBlock.length === 0) {
-            new Popup(`No phrases found within the specified range: <code>${JSON.stringify(range)}</code>.`, POPUP_TYPE.INFO).show();
-            return;
-        }
-
-        const promptText = `(System: Your responses are becoming repetitive. Avoid using the following phrases: ${phrasesToBlock.join(', ')})`;
-
-        if (!chat_metadata.prompt_injects) {
-            chat_metadata.prompt_injects = [];
-        }
-
-        const existingInjection = chat_metadata.prompt_injects.find(inj => inj.id === injectionId);
-
-        if (existingInjection) {
-            existingInjection.text = promptText;
-        } else {
-            chat_metadata.prompt_injects.push({
-                id: injectionId,
-                text: promptText,
-                role: 'user',
-                ephemeral: false,
-                position: 'chat',
-                depth: 4, 
-                enabled: true,
-            });
-        }
-
-        saveMetadataDebounced();
-        new Popup(`<strong>AI Instruction Set!</strong><br>The AI has been instructed to avoid the following phrases:<br><br><em>${phrasesToBlock.join('<br>')}</em>`, POPUP_TYPE.SUCCESS).show();
-    },
-    [],
-    '<span class="monospace">[count=5] [range="[2,3]"] [clear=true]</span> – Injects a prompt for the AI to avoid the top repetitive phrases. Use <code>clear=true</code> to remove the injection.',
-    true,
-    true
-);
-
-registerSlashCommand('wordfrequency-getblocked',
-    (args, value) => {
-        const injectionId = 'wordFrequencyBlocker';
-        const injection = chat_metadata.prompt_injects?.find(inj => inj.id === injectionId);
-        if (!injection) {
-            return '[]';
-        }
-        const regex = /Avoid using the following phrases: (.*)\)$/;
-        const match = injection.text.match(regex);
-        if (!match || !match[1]) {
-            return '[]';
-        }
-        const phrasesString = match[1];
-        const jsonArrayString = `[${phrasesString}]`;
-        return jsonArrayString;
-    },
-    [],
-    '<span class="monospace"></span> – Returns a JSON array of the currently blocked phrases.',
-    true,
-    true
-);
-
-// ------------------- NEW COMMAND TO GET ALL WORDS START -------------------
+// ------------------- NEW/MODIFIED COMMAND TO GET PHRASES START -------------------
 registerSlashCommand('wordfrequency-getall',
     (args, value) => {
         // Run the core functions to get the processed list of words
         const allRawWords = getWords();
         const processedWordObjects = processWords(allRawWords);
 
-        // Extract just the word/phrase from each object
-        const wordList = processedWordObjects.map(item => item.word);
+        // Get the optional 'count' argument. If it's not provided, slice will get the whole array.
+        const count = args.count ? Number(args.count) : undefined;
+
+        // Slice the array to get only the top 'count' phrases, then map to get just the text
+        const wordList = processedWordObjects
+            .slice(0, count)
+            .map(item => item.word);
         
         // Determine the separator, defaulting to a single space
         const separator = args.separator ?? ' ';
@@ -529,8 +437,8 @@ registerSlashCommand('wordfrequency-getall',
         return wordList.join(separator);
     },
     [],
-    '<span class="monospace">[separator=" "]</span> – Returns a single string containing all processed words/phrases, joined by the optional separator.',
+    '<span class="monospace">[count=N] [separator=" "]</span> – Returns a string of top phrases. Use <code>count</code> to limit results and <code>separator</code> to join them.',
     true,
     true
 );
-// ------------------- NEW COMMAND END -------------------
+// ------------------- NEW/MODIFIED COMMAND END -------------------
