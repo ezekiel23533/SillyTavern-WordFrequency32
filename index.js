@@ -498,7 +498,7 @@ registerSlashCommand('wordfrequency-block',
         saveMetadataDebounced();
         new Popup(`<strong>AI Instruction Set!</strong><br>The AI has been instructed to avoid the following phrases:<br><br><em>${phrasesToBlock.join('<br>')}</em>`, POPUP_TYPE.SUCCESS).show();
     },
-    [],
+    ['count', 'range', 'clear'], // <-- THE FIX IS HERE
     '<span class="monospace">[count=5] [range="[2,3]"] [clear=true]</span> – Injects a prompt for the AI to avoid the top repetitive phrases. Use <code>clear=true</code> to remove the injection.',
     true,
     true
