@@ -467,7 +467,7 @@ registerSlashCommand('wordfrequency-block',
         }
 
         // Construct the prompt to be injected
-        const promptText = `(System: Your responses are becoming repetitive. Avoid using the following phrases: ${phrasesToBlock.join(', ')})`;
+        const promptText = `(System: Your responses are becoming repetitive. Avoid using the following phrases or similar: ${phrasesToBlock.join(', ')})`;
 
         // Ensure the prompt_injects array exists
         if (!chat_metadata.prompt_injects) {
