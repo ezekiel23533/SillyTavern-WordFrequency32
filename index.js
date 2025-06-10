@@ -490,39 +490,46 @@ registerSlashCommand('wordfrequency-block',
     true
 );
 
-// ------------------- NEW COMMAND TO GET BLOCKED PHRASES START -------------------
 registerSlashCommand('wordfrequency-getblocked',
     (args, value) => {
         const injectionId = 'wordFrequencyBlocker';
-
-        // Find the injection in the chat metadata
         const injection = chat_metadata.prompt_injects?.find(inj => inj.id === injectionId);
-
         if (!injection) {
-            // If no injection is found, return an empty JSON array
             return '[]';
         }
-
-        // Use a regular expression to extract the list of phrases from the injection text
-        // This makes the parsing robust
         const regex = /Avoid using the following phrases: (.*)\)$/;
         const match = injection.text.match(regex);
-
         if (!match || !match[1]) {
-            // If the text doesn't match the expected format, return an empty array
             return '[]';
         }
-
-        const phrasesString = match[1]; // This will be '"phrase one", "phrase two", ...'
-
-        // Wrap the string in brackets to make it a valid JSON array string
+        const phrasesString = match[1];
         const jsonArrayString = `[${phrasesString}]`;
-
-        // Return the JSON array string. The slash command system will handle it as an array.
         return jsonArrayString;
     },
     [],
     '<span class="monospace"></span> – Returns a JSON array of the currently blocked phrases.',
+    true,
+    true
+);
+
+// ------------------- NEW COMMAND TO GET ALL WORDS START -------------------
+registerSlashCommand('wordfrequency-getall',
+    (args, value) => {
+        // Run the core functions to get the processed list of words
+        const allRawWords = getWords();
+        const processedWordObjects = processWords(allRawWords);
+
+        // Extract just the word/phrase from each object
+        const wordList = processedWordObjects.map(item => item.word);
+        
+        // Determine the separator, defaulting to a single space
+        const separator = args.separator ?? ' ';
+
+        // Join the array into a single string and return it
+        return wordList.join(separator);
+    },
+    [],
+    '<span class="monospace">[separator=" "]</span> – Returns a single string containing all processed words/phrases, joined by the optional separator.',
     true,
     true
 );
